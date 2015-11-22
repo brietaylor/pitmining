@@ -23,6 +23,9 @@ def block_profit_simple(cu):
     return cu - .1
 
 def normalize_data(df, scale=1):
+    global zmin
+    zmin = df.zcen.min()
+
     x_spacing = 20 * scale
     y_spacing = 20 * scale
     z_spacing = -15 * scale
@@ -110,7 +113,7 @@ def topography(df, scale=(1,1,1)):
         x_scale = 20 * scale
         y_scale = 20 * scale
         z_scale = 15 * scale
-        pyplot.imshow(topo*z_scale, origin='lower',
+        pyplot.imshow(topo*z_scale + zmin, origin='lower',
                 extent=(0, xlim*x_scale, 0, ylim*y_scale), cmap='terrain')
         pyplot.colorbar()
         pyplot.show()
@@ -216,17 +219,20 @@ def do_pitmine(price):
     print(np.sum(image, 0))
 
     # Do a 3D plot of the mine
-    from mpl_toolkits.mplot3d import Axes3D
-    fig = pyplot.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    x = np.arange(0, xlim)
-    y = np.arange(0, ylim)
-    x, y = np.meshgrid(x, y)
-    ax.plot_surface(x, y, -np.sum(image, 0), cmap='terrain', rstride=1,
-            cstride=1, linewidth=0)
-    ax.set_zlim(-xlim/1.4, 0) # hack to make it look square
-    pyplot.show()
-    pyplot.imsave('output.png', np.sum(image, 0), cmap='terrain')
+    if True:
+        from mpl_toolkits.mplot3d import Axes3D
+        fig = pyplot.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        x = np.arange(0, xlim)
+        y = np.arange(0, ylim)
+        x, y = np.meshgrid(x, y)
+        ax.plot_surface(x, y, -np.sum(image, 0), cmap='terrain', rstride=1,
+                cstride=1, linewidth=0)
+        ax.set_zlim(-xlim/1.4, 0) # hack to make it look square
+        pyplot.show()
+
+    if True:
+        pyplot.imsave('output.png', np.sum(image, 0), cmap='terrain')
 
 lamb = 1.03
 
