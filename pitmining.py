@@ -15,9 +15,9 @@ process = 5.6
 #copper price as of 31/05/2015 is 6294.78/t, again we will assume its per block
 price = 6294.78
 
-def block_profit(cu):
+def block_profit(cu, btopo=1):
     # grade is by percent
-    return price * cu / 100 - process - fixed
+    return (price * cu / 100 - process - fixed) * btopo
 
 def block_profit_simple(cu):
     return cu - .1
@@ -53,7 +53,7 @@ def load_data(filename, scale=1):
 def dropwhile(pred, it, last=None):
     """Sorry itertools, but you are way too slow. :(
 
-    Different:
+    Differences from itertools.dropwhile():
      * perform in-place, for performance
      * immediately return first value failing predicate
      * store previous value as function parameter."""
