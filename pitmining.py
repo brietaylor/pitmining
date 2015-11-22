@@ -5,7 +5,8 @@ import sys
 import math
 import numpy as np
 import pandas
-from tqdm import tqdm
+from tqdm import tqdm, trange
+from matplotlib import pyplot
 
 #fixed cost per block is $1.66/t, here we will assume its 1.66 perblock
 fixed = 1.66
@@ -169,7 +170,6 @@ def do_pitmine(price):
 
     # Do a 3D plot of the mine
     from mpl_toolkits.mplot3d import Axes3D
-    from matplotlib import pyplot
     fig = pyplot.figure()
     ax = fig.add_subplot(111, projection='3d')
     x = np.arange(0, xlim)
