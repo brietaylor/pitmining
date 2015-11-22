@@ -22,7 +22,22 @@ def block_profit(cu, btopo=1):
 def block_profit_simple(cu):
     return cu - .1
 
-def load_data(filename, scale=1):
+def normalize_data(df, scale=1):
+    x_spacing = 20 * scale
+    y_spacing = 20 * scale
+    z_spacing = -15 * scale
+
+    # Adjust the size of the mine so that elements are separated by 1.0.
+    df.xcen /= x_spacing
+    df.ycen /= y_spacing
+    df.zcen /= z_spacing
+
+    # Translate the mine so it starts at (0,0,0)
+    df.xcen -= df.xcen.min()
+    df.ycen -= df.ycen.min()
+    df.zcen -= df.zcen.min()
+
+def load_data(filename, scale=1, profit_model=block_profit, **model_args):
     print("Loading data...", end='')
     sys.stdout.flush()
     df = pandas.read_csv(filename).drop_duplicates()
@@ -30,19 +45,9 @@ def load_data(filename, scale=1):
 
     print("Computing block values...", end='')
     sys.stdout.flush()
-    x_spacing = 20 * scale
-    y_spacing = 20 * scale
-    z_spacing = 15 * scale
 
-    # Translate the mine so it starts at (0,0,0)
-    df.xcen -= df.xcen.min()
-    df.ycen -= df.ycen.min()
-    df.zcen -= df.zcen.min()
-
-    # Adjust the size of the mine so that elements are separated by 1.0.
-    df.xcen /= x_spacing
-    df.ycen /= y_spacing
-    df.zcen /= z_spacing
+    normalize_data(df, scale)
+    df['profit'] = profit_model(df.cu, df.btopo, **model_args)
 
     df['profit'] = block_profit(df.cu)
     print("done")
