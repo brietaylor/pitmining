@@ -73,6 +73,48 @@ def dropwhile(pred, it, last=None):
         pass
     return last
 
+def topography(df, scale=(1,1,1)):
+    ylim = int(df.ycen.max() + 1)
+    xlim = int(df.xcen.max() + 1)
+
+    # Take z in reverse order, so that when we iterate through them, the
+    # highest z value (the top of the topography) will come up first.
+    df_iter = df.sort(['ycen', 'xcen', 'zcen']).itertuples()
+
+    xcen = df.columns.get_loc("xcen") + 1
+    ycen = df.columns.get_loc("ycen") + 1
+    zcen = df.columns.get_loc("zcen") + 1
+
+    row = None
+    topo = np.zeros((ylim, xlim))
+    for y in trange(ylim, desc="Computing topography"):
+        for x in range(xlim):
+            def same_pixel(row):
+                """Use tuple ordering to determine whether we're ahead
+                or behind the dataframe."""
+                image_index = (y,x)
+                df_index = (row[ycen], row[xcen])
+                return df_index < image_index
+
+            # Drop until x,y coordinates match.  Since this is sorted by
+            # x,y,z, and z is reversed, the next pixel will be the highest z.
+            row = dropwhile(same_pixel, df_iter, row)
+            if row[xcen] == x and row[ycen] == y:
+                topo[y,x] = row[zcen]
+            else:
+                raise RuntimeError("No data at coordinate x={},y={}"
+                        .format(x,y))
+
+    if True:
+        # Scale in x,y,z
+        x_scale = 20 * scale
+        y_scale = 20 * scale
+        z_scale = 15 * scale
+        pyplot.imshow(topo*z_scale, origin='lower',
+                extent=(0, xlim*x_scale, 0, ylim*y_scale), cmap='terrain')
+        pyplot.colorbar()
+        pyplot.show()
+
 def df_to_image(df):
     xlim = int(np.floor(df.xcen.max()) + 1)
     ylim = int(np.floor(df.ycen.max()) + 1)
