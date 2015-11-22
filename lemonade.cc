@@ -57,7 +57,12 @@ int main(int argc, char **argv)
   auto preflower = Preflow<lemon::ListDigraph>(g, cap, s, t);
   preflower.runMinCut();
 
+  int n = 0;
   for (auto row = node_mat.begin(); row != node_mat.end(); ++row) {
+    // Shift the row over a bunch.
+    for (int i = 0; i < n; i++)
+      std::cout << "X";
+
     for (auto node = row->begin(); node != row->end(); ++node) {
       if (preflower.minCut(*node)) {
         std::cout << " ";
@@ -65,6 +70,9 @@ int main(int argc, char **argv)
         std::cout << "X";
       }
     }
+    for (int i = 0; i < n; i++)
+      std::cout << "X";
+    n++;
     std::cout << std::endl;
   }
 
