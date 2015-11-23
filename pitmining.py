@@ -19,12 +19,21 @@ def block_profit(cu, btopo=1):
     # grade is by percent
     return (price * cu / 100 - process - fixed) * btopo
 
-def block_profit_simple(cu):
+def block_profit_aironly(cu, btopo=None):
+    """Nothing is profitable."""
+    return -1
+
+def block_profit_everything(cu, btopo=None):
+    """Everything is profitable"""
+    return +1
+
+def block_profit_simple(cu, btopo=None):
     return cu - .1
 
 def normalize_data(df, scale=1):
-    global zmin
+    global zmin, zmax
     zmin = df.zcen.min()
+    zmax = df.zcen.max()
 
     x_spacing = 20 * scale
     y_spacing = 20 * scale
@@ -40,7 +49,7 @@ def normalize_data(df, scale=1):
     df.ycen -= df.ycen.min()
     df.zcen -= df.zcen.min()
 
-def load_data(filename, scale=1, profit_model=block_profit, **model_args):
+def load_data(filename, scale=1):
     print("Loading data...", end='')
     sys.stdout.flush()
     df = pandas.read_csv(filename).drop_duplicates()
@@ -50,13 +59,9 @@ def load_data(filename, scale=1, profit_model=block_profit, **model_args):
     sys.stdout.flush()
 
     normalize_data(df, scale)
-    df['profit'] = profit_model(df.cu, df.btopo, **model_args)
-
-    df['profit'] = block_profit(df.cu)
     print("done")
 
-    image = df_to_image(df)
-    return image
+    return df
 
 def dropwhile(pred, it, last=None):
     """Sorry itertools, but you are way too slow. :(
@@ -82,6 +87,8 @@ def topography(df, scale=(1,1,1)):
 
     # Take z in reverse order, so that when we iterate through them, the
     # highest z value (the top of the topography) will come up first.
+    print("Computing topography", end='\r')
+    sys.stdout.flush()
     df_iter = df.sort(['ycen', 'xcen', 'zcen']).itertuples()
 
     xcen = df.columns.get_loc("xcen") + 1
@@ -89,8 +96,8 @@ def topography(df, scale=(1,1,1)):
     zcen = df.columns.get_loc("zcen") + 1
 
     row = None
-    topo = np.zeros((ylim, xlim))
-    for y in trange(ylim, desc="Computing topography"):
+    topo = np.zeros((ylim, xlim), dtype=np.int32)
+    for y in trange(ylim, desc="Computing topography", leave=True):
         for x in range(xlim):
             def same_pixel(row):
                 """Use tuple ordering to determine whether we're ahead
@@ -100,7 +107,7 @@ def topography(df, scale=(1,1,1)):
                 return df_index < image_index
 
             # Drop until x,y coordinates match.  Since this is sorted by
-            # x,y,z, and z is reversed, the next pixel will be the highest z.
+            # x,y,z, the next pixel will be the lowest z.
             row = dropwhile(same_pixel, df_iter, row)
             if row[xcen] == x and row[ycen] == y:
                 topo[y,x] = row[zcen]
@@ -108,36 +115,40 @@ def topography(df, scale=(1,1,1)):
                 raise RuntimeError("No data at coordinate x={},y={}"
                         .format(x,y))
 
-    if True:
+    if False:
         # Scale in x,y,z
         x_scale = 20 * scale
         y_scale = 20 * scale
         z_scale = 15 * scale
-        pyplot.imshow(topo*z_scale + zmin, origin='lower',
+        pyplot.imshow(zmax - topo*z_scale, origin='lower',
                 extent=(0, xlim*x_scale, 0, ylim*y_scale), cmap='terrain')
         pyplot.colorbar()
         pyplot.show()
 
-def df_to_image(df):
+    return topo
+
+def df_to_image(df, profit_model):
     xlim = int(np.floor(df.xcen.max()) + 1)
     ylim = int(np.floor(df.ycen.max()) + 1)
     zlim = int(np.floor(df.zcen.max()) + 1)
 
     i = 0
     niter = zlim * ylim * xlim
-    arr = np.zeros((zlim, ylim, xlim))
-    arr[:,:,:] = block_profit(0)
+    value = np.zeros((zlim, ylim, xlim))
 
+    print("Converting df to profit", end='\r')
+    sys.stdout.flush()
     df_iter = df.sort(["zcen", "ycen", "xcen"]).itertuples()
 
     # df.columns doesn't include the index column, added by itertuples().
     xcen = df.columns.get_loc("xcen") + 1
     ycen = df.columns.get_loc("ycen") + 1
     zcen = df.columns.get_loc("zcen") + 1
-    profit = df.columns.get_loc("profit") + 1
+    cu = df.columns.get_loc("cu") + 1
+    btopo = df.columns.get_loc("btopo") + 1
 
     row = None
-    for z in tqdm(range(zlim), "Convert df to image", leave=True):
+    for z in trange(zlim, desc="Converting df to profit", leave=True):
         for y in range(ylim):
             for x in range(xlim):
                 def same_pixel(row):
@@ -150,53 +161,79 @@ def df_to_image(df):
                 row = dropwhile(same_pixel, df_iter, row)
 
                 if row[xcen] == x and row[ycen] == y and row[zcen] == z:
-                    arr[z,y,x] = row[profit]
+                    value[z,y,x] = profit_model(row[cu], row[btopo])
                 else:
-                    # TODO: Should check this doesn't come up too often.
-                    arr[z,y,x] = block_profit(0)
-    return arr
+                    # No data.  Treat it like empty dirt.
+                    value[z,y,x] = profit_model(0, 1)
+    return value
 
-def do_pitmine(price):
+def optimal_pitmine(price, topo):
     zlim,ylim,xlim = price.shape
-    print("Optimizing in {} variables".format(zlim*ylim*xlim))
 
     prob = pulp.LpProblem("pitmine", pulp.LpMaximize)
 
+    def at_edge(y,x):
+        if x == 0 or x == xlim - 1:
+            return True
+        if y == 0 or y == ylim - 1:
+            return True
+        return False
+
     # Create a dict of variables "d_zyx"
     ds = {}
+    num_variables = 0
     for z in tqdm(range(zlim), "Formulating LP variables", leave=True):
         for y in range(ylim):
             for x in range(xlim):
-                if (z <= y < ylim - z) and (z <= x < xlim - z):
+                if z < topo[y,x]:
+                    # We're above the topography.  This block is
+                    # unconditionally mined.
+                    price[z,y,x] = 0
+                    ds[z,y,x] = 1
+
+                elif z == topo[y,x] and at_edge(y,x):
+                    # We're at the topography line and at the edge of the map.
+                    # We can't dig here.
+                    price[z,y,x] = 0
+                    ds[z,y,x] = 0
+
+                else:
+                    # This is potential pitmining space.
+                    #
                     # Give our variables names like d003002001 for 3-deep,
                     # 2-across.  These names aren't actually used anywhere,
                     # but PuLP makes them mandatory and they have to be
                     # unique.
                     name = "d{:03}{:03}{:03}".format(z, y, x)
                     ds[z,y,x] = pulp.LpVariable(name, cat=pulp.LpBinary)
-                else:
-                    # These cells are guaranteed to be zero, no need to
-                    # include them in the model.
-                    ds[z,y,x] = 0
-
-                if z == 0:
-                    continue
+                    num_variables += 1
 
                 def addconstraint(dy, dx):
                     nonlocal prob
                     if (0 <= y + dy < ylim and 0 <= x + dx < xlim):
-                        prob += ds[z,y,x] <= ds[z-1,y+dy,x+dx]
+                        constraint = ds[z,y,x] <= ds[z-1,y+dy,x+dx]
+                        if constraint is False:
+                            raise RuntimeError(
+                                    "Problem Infeasible by definition: "
+                                    "ds[{},{},{}]: {} <= ds[{},{},{}]: {}"
+                                    .format(z,y,x,ds[z,y,x],
+                                            z-1,y+dy,x+dx,ds[z-1,y+dy,x+dx]))
+                        prob += constraint
 
-                # Add nine constraints, one per block above this one
-                addconstraint(-1, -1)
-                addconstraint(-1, 0)
-                addconstraint(-1, 1)
-                addconstraint(0, -1)
-                addconstraint(0, 0)
-                addconstraint(0, 1)
-                addconstraint(1, -1)
-                addconstraint(1, 0)
-                addconstraint(1, 1)
+                if z != 0:
+                    # No constraints on the top layer of blocks, otherwise,
+                    # add nine constraints, one per block above this one
+                    addconstraint(0, 0)
+                    addconstraint(-1, -1)
+                    addconstraint(-1, 0)
+                    addconstraint(-1, 1)
+                    addconstraint(0, -1)
+                    addconstraint(0, 1)
+                    addconstraint(1, -1)
+                    addconstraint(1, 0)
+                    addconstraint(1, 1)
+
+    print("Optimizing in {} variables".format(num_variables))
 
     # Maximizing profit
     obj = 0
@@ -215,24 +252,30 @@ def do_pitmine(price):
     for z, y, x in ds:
         image[z,y,x] = pulp.value(ds[z,y,x])
 
+    return image
+
+def plot_pitmine_3d(pitmine, scale):
+    """Do a 3D plot of the mine"""
     # Print out how deep we went (a birds-eye view of the mine depth)
-    print(np.sum(image, 0))
+    x_scale = 20 * scale
+    y_scale = 20 * scale
+    z_scale = 15 * scale
+    zlim, ylim, xlim = pitmine.shape
 
-    # Do a 3D plot of the mine
-    if True:
-        from mpl_toolkits.mplot3d import Axes3D
-        fig = pyplot.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        x = np.arange(0, xlim)
-        y = np.arange(0, ylim)
-        x, y = np.meshgrid(x, y)
-        ax.plot_surface(x, y, -np.sum(image, 0), cmap='terrain', rstride=1,
-                cstride=1, linewidth=0)
-        ax.set_zlim(-xlim/1.4, 0) # hack to make it look square
-        pyplot.show()
+    print(np.sum(pitmine, 0))
+    pyplot.imsave('output.png', zmax - z_scale * np.sum(pitmine, 0),
+            cmap='terrain', vmin=zmin, vmax=zmax)
 
-    if True:
-        pyplot.imsave('output.png', np.sum(image, 0), cmap='terrain')
+    from mpl_toolkits.mplot3d import Axes3D
+    fig = pyplot.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    x = np.arange(0, xlim) * x_scale
+    y = np.arange(0, ylim) * y_scale
+    x, y = np.meshgrid(x, y)
+    ax.plot_surface(x, y, zmax - z_scale * np.sum(pitmine, 0), cmap='terrain',
+            rstride=1, cstride=1, linewidth=0)
+    ax.set_zlim(zmin, zmax)
+    pyplot.show()
 
 lamb = 1.03
 
@@ -247,10 +290,11 @@ def main():
         print("usage: {} <filename.csv> [scale]".format(sys.argv[0]))
         exit(1)
 
-    #import scipy.stats
-    #price = scipy.stats.expon.rvs(loc=-1, scale=lamb, size=(zlim, ylim, xlim))
-    price = load_data(filename, scale=scale)
-    do_pitmine(price)
+    df = load_data(filename, scale=scale)
+    topo = topography(df, scale=scale)
+    value = df_to_image(df, profit_model=block_profit)
+    pitmine = optimal_pitmine(value, topo)
+    plot_pitmine_3d(pitmine, scale=scale)
 
 if __name__ == "__main__":
     main()
