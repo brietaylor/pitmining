@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 
-import pulp
 import sys
-import math
 import numpy as np
-import pandas
 from tqdm import tqdm, trange
 from matplotlib import pyplot
+np.set_printoptions(threshold=np.nan)
 
 #fixed cost per block is $1.66/t, here we will assume its 1.66 perblock
 fixed = 1.66
 #process cost is prices at 5.6/t, we will assume its 5.6 perblock
 process = 5.6
 #copper price as of 31/05/2015 is 6294.78/t, again we will assume its per block
-price = 6294.78
+cu_price = 6294.78
 
-def block_profit(cu, btopo=1):
-    # grade is by percent
-    return (price * cu / 100 - process - fixed) * btopo
+def block_profit(cu, btopo=1, price=cu_price):
+    """Compute block profit for given copper percentage"""
+    return btopo * ((price * cu / 100 - process) - fixed)
+
+def block_profit_choice(*args, **kwargs):
+    """Compute block profit for given copper percentage"""
+    return max(0, block_profit(*args, **kwargs))
 
 def block_profit_aironly(cu, btopo=None):
     """Nothing is profitable."""
@@ -26,9 +28,6 @@ def block_profit_aironly(cu, btopo=None):
 def block_profit_everything(cu, btopo=None):
     """Everything is profitable"""
     return +1
-
-def block_profit_simple(cu, btopo=None):
-    return cu - .1
 
 def normalize_data(df, scale=1):
     global zmin, zmax
@@ -52,6 +51,7 @@ def normalize_data(df, scale=1):
 def load_data(filename, scale=1):
     print("Loading data...", end='')
     sys.stdout.flush()
+    import pandas
     df = pandas.read_csv(filename).drop_duplicates()
     print("done")
 
@@ -127,7 +127,7 @@ def topography(df, scale=(1,1,1)):
 
     return topo
 
-def df_to_image(df, profit_model):
+def df_to_image(df, profit_model, **model_args):
     xlim = int(np.floor(df.xcen.max()) + 1)
     ylim = int(np.floor(df.ycen.max()) + 1)
     zlim = int(np.floor(df.zcen.max()) + 1)
@@ -161,13 +161,18 @@ def df_to_image(df, profit_model):
                 row = dropwhile(same_pixel, df_iter, row)
 
                 if row[xcen] == x and row[ycen] == y and row[zcen] == z:
-                    value[z,y,x] = profit_model(row[cu], row[btopo])
+                    value[z,y,x] = profit_model(row[cu], row[btopo], **model_args)
                 else:
                     # No data.  Treat it like empty dirt.
-                    value[z,y,x] = profit_model(0, 1)
+                    value[z,y,x] = profit_model(0, 1, **model_args)
+    if False:
+        pyplot.hist(value.flatten())
+        pyplot.title("dirt value")
+        pyplot.show()
     return value
 
 def optimal_pitmine(price, topo):
+    import pulp
     zlim,ylim,xlim = price.shape
 
     prob = pulp.LpProblem("pitmine", pulp.LpMaximize)
@@ -247,37 +252,89 @@ def optimal_pitmine(price, topo):
     outcome = prob.solve()
     print(pulp.LpStatus[outcome])
 
-    # Plot an image
+    # Convert solution to a 3d image
     image = np.zeros((zlim,ylim,xlim))
     for z, y, x in ds:
         image[z,y,x] = pulp.value(ds[z,y,x])
 
-    return image
+    # Get a 2D projection of the image
+    projection = np.sum(image, 0)
 
-def plot_pitmine_3d(pitmine, scale):
+    # Compute the objective function
+
+    # This doesn't work for reasons unknown.  No time to really debug it.
+    obj_value = np.sum(image * price)
+    print("Objective: {}".format(obj_value))
+
+    return projection, obj_value
+
+def plot_pitmine_2d(pitmine, scale, name='output'):
     """Do a 3D plot of the mine"""
     # Print out how deep we went (a birds-eye view of the mine depth)
     x_scale = 20 * scale
     y_scale = 20 * scale
     z_scale = 15 * scale
-    zlim, ylim, xlim = pitmine.shape
+    ylim, xlim = pitmine.shape
 
-    print(np.sum(pitmine, 0))
-    pyplot.imsave('output.png', zmax - z_scale * np.sum(pitmine, 0),
+    print(pitmine)
+    np.save("{}.npy".format(name), pitmine)
+    pyplot.imsave("{}.png".format(name), zmax - z_scale * pitmine,
             cmap='terrain', vmin=zmin, vmax=zmax)
 
+def plot_pitmine_3d(pitmine, scale):
     from mpl_toolkits.mplot3d import Axes3D
+    x_scale = 20 * scale
+    y_scale = 20 * scale
+    z_scale = 15 * scale
+    ylim, xlim = pitmine.shape
+
     fig = pyplot.figure()
     ax = fig.add_subplot(111, projection='3d')
     x = np.arange(0, xlim) * x_scale
     y = np.arange(0, ylim) * y_scale
     x, y = np.meshgrid(x, y)
-    ax.plot_surface(x, y, zmax - z_scale * np.sum(pitmine, 0), cmap='terrain',
+    ax.plot_surface(x, y, zmax - z_scale * pitmine, cmap='terrain',
             rstride=1, cstride=1, linewidth=0)
     ax.set_zlim(zmin, zmax)
     pyplot.show()
 
-lamb = 1.03
+def do_resolution_sensitivity(filename):
+    """Run at several resolutions to check for convergence."""
+    scales = (8, 4, 2, 1)
+    values = []
+    for s in scales:
+        df = load_data(filename, scale=s)
+        topo = topography(df, scale=s)
+        value = df_to_image(df, profit_model=block_profit)
+        _, objective = optimal_pitmine(value, topo)
+        values.append(objective)
+    pyplot.plot(scales, values)
+    pyplot.show()
+
+def do_single(filename, scale):
+    df = load_data(filename, scale=scale)
+    topo = topography(df, scale=scale)
+    value = df_to_image(df, profit_model=block_profit, price=cu_price)
+    pitmine, objective = optimal_pitmine(value, topo)
+    plot_pitmine_2d(topo, scale=scale, name='topo')
+    plot_pitmine_2d(pitmine, scale=scale, name='pitmine')
+
+def do_price_sensitivity(filename, scale):
+    df = load_data(filename, scale=scale)
+    topo = topography(df, scale=scale)
+    cu_price_factors = (10, 1.0, .1)
+    obj = []
+    for cu_price_factor in cu_price_factors:
+        value = df_to_image(df, profit_model=block_profit,
+                price=cu_price_factor*cu_price)
+        pitmine, objective = optimal_pitmine(value, topo)
+        obj.append(objective)
+        plot_pitmine_2d(pitmine, scale=scale,
+                name=str(int(10*cu_price_factor)))
+        plot_pitmine_3d(pitmine, scale=scale)
+
+    pyplot.plot(cu_price_factors, obj)
+    pyplot.show()
 
 def main():
     try:
@@ -290,11 +347,7 @@ def main():
         print("usage: {} <filename.csv> [scale]".format(sys.argv[0]))
         exit(1)
 
-    df = load_data(filename, scale=scale)
-    topo = topography(df, scale=scale)
-    value = df_to_image(df, profit_model=block_profit)
-    pitmine = optimal_pitmine(value, topo)
-    plot_pitmine_3d(pitmine, scale=scale)
+    do_single(filename, scale)
 
 if __name__ == "__main__":
     main()
