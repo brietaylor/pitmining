@@ -53,7 +53,7 @@ int main(int argc, char **argv)
     node_mat.push_back(node_row);
   }
 
-  // Now call the min cut solver?
+  // Now call the min cut solver.
   auto preflower = Preflow<lemon::ListDigraph>(g, cap, s, t);
   preflower.runMinCut();
 
