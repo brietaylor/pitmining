@@ -5,21 +5,25 @@ import numpy as np
 from tqdm import tqdm, trange
 from matplotlib import pyplot
 np.set_printoptions(threshold=np.nan)
+pyplot.rc('figure', figsize=(11,8))
 
 #fixed cost per block is $1.66/t, here we will assume its 1.66 perblock
-fixed = 1.66
+fixed = 15900 * 1.66
 #process cost is prices at 5.6/t, we will assume its 5.6 perblock
-process = 5.6
+process = 15900 * 7.31
 #copper price as of 31/05/2015 is 6294.78/t, again we will assume its per block
-cu_price = 6294.78
+cu_price = 15900 * 4698 * .88
 
 def block_profit(cu, btopo=1, price=cu_price):
     """Compute block profit for given copper percentage"""
     return btopo * ((price * cu / 100 - process) - fixed)
 
-def block_profit_choice(*args, **kwargs):
-    """Compute block profit for given copper percentage"""
-    return max(0, block_profit(*args, **kwargs))
+def block_profit_choice(cu, btopo, *args, **kwargs):
+    """Same as block profit, but now we can throw away blocks that aren't
+    worth processing."""
+    process = block_profit(cu, *args, **kwargs)
+    noprocess = -fixed * btopo
+    return np.maximum(process, noprocess)
 
 def block_profit_aironly(cu, btopo=None):
     """Nothing is profitable."""
@@ -82,7 +86,7 @@ def topography(df):
     ylim = int(np.floor(df.ycen.max()) + 1)
 
     # Take z in reverse order, so that when we iterate through them, the
-    # highest z value (the top of the topography) will come up first.
+    # lowest z value (the top of the topography) will come up first.
     print("Computing topography", end='\r')
     sys.stdout.flush()
     df_iter = df.sort(['ycen', 'xcen', 'zcen']).itertuples()
@@ -111,19 +115,9 @@ def topography(df):
                 raise RuntimeError("No data at coordinate x={},y={}"
                         .format(x,y))
 
-    if False:
-        # Scale in x,y,z
-        x_scale = 20
-        y_scale = 20
-        z_scale = 15
-        pyplot.imshow(zmax - topo*z_scale, origin='lower',
-                extent=(0, xlim*x_scale, 0, ylim*y_scale), cmap='terrain')
-        pyplot.colorbar()
-        pyplot.show()
-
     return topo
 
-def df_to_image(df, profit_model, **model_args):
+def mine_profit(df, profit_model, **model_args):
     xlim = int(np.floor(df.xcen.max()) + 1)
     ylim = int(np.floor(df.ycen.max()) + 1)
     zlim = int(np.floor(df.zcen.max()) + 1)
@@ -165,6 +159,7 @@ def df_to_image(df, profit_model, **model_args):
         pyplot.hist(value.flatten())
         pyplot.title("dirt value")
         pyplot.show()
+
     return value
 
 def optimal_pitmine(price, topo):
@@ -258,9 +253,6 @@ def optimal_pitmine(price, topo):
     # Get a 2D projection of the image
     projection = np.sum(image, 0, dtype=np.uint)
 
-    # Compute the objective function
-
-    # This doesn't work for reasons unknown.  No time to really debug it.
     obj_value = np.sum(image * price)
     print("Objective: {}".format(obj_value))
 
@@ -273,8 +265,8 @@ def downsample(image, scale):
     result = np.zeros(result_shape, dtype=image.dtype)
     num_avg = scale**2
     if len(result_shape) == 2:
-        # 2d downsample using averaging
-        # KLUDGE: I know this is topography, so scale down the z-axis, too.
+        # 2d downsample
+        # XXX: I know this is topography, so scale down the z-axis, too.
         ylim, xlim = result_shape
         for y in range(ylim):
             for x in range(xlim):
@@ -283,7 +275,7 @@ def downsample(image, scale):
                 result[y,x] = np.mean(image[ymin:ymax, xmin:xmax] / scale)
     elif len(result_shape) == 3:
         # 3d downsample
-        # KLUDGE: I know this is price data, so sum it instead of averaging.
+        # XXX: I know this is price data, so sum it instead of averaging.
         zlim, ylim, xlim = result_shape
         for z in range(zlim):
             for y in range(ylim):
@@ -295,7 +287,7 @@ def downsample(image, scale):
     return result
 
 def plot_pitmine_2d(pitmine, scale, name='output'):
-    """Do a 3D plot of the mine"""
+    """Do a 2D plot of the mine, and save the data for later use"""
     # Print out how deep we went (a birds-eye view of the mine depth)
     x_scale = 20 * scale
     y_scale = 20 * scale
@@ -308,6 +300,7 @@ def plot_pitmine_2d(pitmine, scale, name='output'):
             cmap='terrain', vmin=zmin, vmax=zmax)
 
 def plot_pitmine_3d(pitmine, scale):
+    """Plot a pitmine or topography map in 3D"""
     from mpl_toolkits.mplot3d import Axes3D
     x_scale = 20 * scale
     y_scale = 20 * scale
@@ -326,44 +319,49 @@ def plot_pitmine_3d(pitmine, scale):
 
 def do_resolution_sensitivity(filename):
     """Run at several resolutions to check for convergence."""
-    scales = (8, 4, 2, 1)
-    values = []
+    scales = (8, 7, 6, 5, 4, 3, 2)
+    obj = []
     df = load_data(filename)
     topo = topography(df)
-    value = df_to_image(df, profit_model=block_profit)
+    value = mine_profit(df, profit_model=block_profit_choice, price=7*cu_price)
     for s in scales:
         topo_scaled = downsample(topo, s)
         value_scaled = downsample(value, s)
         _, objective = optimal_pitmine(value_scaled, topo_scaled)
-        values.append(objective)
-    pyplot.plot(scales, values)
-    pyplot.show()
+        obj.append(objective)
+    pyplot.plot(scales, obj)
+    pyplot.savefig("convergence.png")
+    pyplot.clf()
 
 def do_single(filename, scale):
+    """Compute a single pitmine and plot it in 3D."""
     df = load_data(filename)
     topo = downsample(topography(df), scale)
     plot_pitmine_2d(topo, scale=scale, name='topo')
-    value = downsample(df_to_image(df, profit_model=block_profit,
-                price=cu_price), scale)
+    value = downsample(mine_profit(df, profit_model=block_profit_choice,
+                price=7*cu_price), scale)
     pitmine, objective = optimal_pitmine(value, topo)
     plot_pitmine_2d(pitmine, scale=scale, name='pitmine')
     plot_pitmine_3d(pitmine, scale=scale)
 
 def do_price_sensitivity(filename, scale):
+    """Compute a number of pitmines with various copper prices, and plot the
+    resulting values"""
     df = load_data(filename)
     topo = downsample(topography(df), scale)
-    cu_price_factors = (1.5, 1.25, 1.0)
+    cu_price_factors = np.logspace(0,1,20)
     obj = []
     for cu_price_factor in cu_price_factors:
-        value = downsample(df_to_image(df, profit_model=block_profit,
+        value = downsample(mine_profit(df, profit_model=block_profit_choice,
                 price=cu_price_factor*cu_price), scale)
         pitmine, objective = optimal_pitmine(value, topo)
         obj.append(objective)
         plot_pitmine_2d(pitmine, scale=scale,
-                name=str(int(10*cu_price_factor)))
+                name=str(int(cu_price_factor)))
 
     pyplot.plot(cu_price_factors, obj)
-    pyplot.show()
+    pyplot.savefig("price_sense.png")
+    pyplot.clf()
 
 def main():
     try:
@@ -377,6 +375,8 @@ def main():
         exit(1)
 
     do_single(filename, scale)
+    #do_resolution_sensitivity(filename)
+    #do_price_sensitivity(filename, scale)
 
 if __name__ == "__main__":
     main()
